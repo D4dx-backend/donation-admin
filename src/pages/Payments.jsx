@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import apiClient from '../config/api';
+import * as XLSX from 'xlsx';
+import ConfirmModal from '../components/ConfirmModal';
 
 const Payments = () => {
   const [payments, setPayments] = useState([]);
@@ -18,11 +20,36 @@ const Payments = () => {
   const [minAmount, setMinAmount] = useState('');
   const [maxAmount, setMaxAmount] = useState('');
   const [status, setStatus] = useState('');
+  const hasMountedRef = useRef(false);
+  const [exporting, setExporting] = useState(false);
+  const [deletingId, setDeletingId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     fetchPayments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page]);
+
+  useEffect(() => {
+    // Avoid duplicate fetch on first render (already covered by page effect)
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+
+    const debounceTimer = setTimeout(() => {
+      if (pagination.page !== 1) {
+        setPagination((prev) => ({ ...prev, page: 1 }));
+        return;
+      }
+
+      fetchPayments(1);
+    }, 250);
+
+    return () => clearTimeout(debounceTimer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, fromDate, toDate, minAmount, maxAmount, status]);
 
   const fetchPayments = async (pageOverride, filtersOverride = null) => {
     setLoading(true);
@@ -61,11 +88,6 @@ const Payments = () => {
     }
   };
 
-  const handleSearch = () => {
-    setPagination((prev) => ({ ...prev, page: 1 }));
-    fetchPayments(1);
-  };
-
   const handleClearFilters = () => {
     setSearch('');
     setFromDate('');
@@ -84,34 +106,6 @@ const Payments = () => {
     });
   };
 
-  const handleExportPDF = async () => {
-    try {
-      const params = {};
-      if (search) params.search = search;
-      if (fromDate) params.fromDate = fromDate;
-      if (toDate) params.toDate = toDate;
-      if (minAmount) params.minAmount = minAmount;
-      if (maxAmount) params.maxAmount = maxAmount;
-      if (status) params.status = status;
-
-      const response = await apiClient.get('/admin/api/payments/export', {
-        params,
-        responseType: 'blob',
-      });
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `payments-${Date.now()}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } catch (error) {
-      console.error('Failed to export PDF:', error);
-      alert('Failed to export PDF');
-    }
-  };
-
   const formatCurrency = (amountInPaise) => {
     // Convert paise to rupees
     const amountInRupees = amountInPaise / 100;
@@ -122,34 +116,91 @@ const Payments = () => {
     }).format(amountInRupees);
   };
 
+  const formatPaymentId = (payment) => {
+    const id = payment.razorpayPaymentId || payment.razorpayOrderId || '-';
+    return id.length > 20 ? `${id.substring(0, 20)}...` : id;
+  };
+
+  const getStatusClass = (paymentStatus) => {
+    if (paymentStatus === 'success') return 'bg-green-100 text-green-800';
+    if (paymentStatus === 'failed') return 'bg-red-100 text-red-800';
+    if (paymentStatus === 'pending') return 'bg-yellow-100 text-yellow-800';
+    if (paymentStatus === 'refunded') return 'bg-purple-100 text-purple-800';
+    return 'bg-gray-100 text-gray-800';
+  };
+
+  const handleExport = () => {
+    if (payments.length === 0 || exporting) return;
+
+    try {
+      setExporting(true);
+      const rows = payments.map((payment) => ({
+        'Payment ID': payment.razorpayPaymentId || payment.razorpayOrderId || '-',
+        'Donor Name': payment.name || '-',
+        Email: payment.email || '-',
+        Phone: payment.phone || '-',
+        Amount: (payment.amount || 0) / 100,
+        Status: (payment.status || '').toUpperCase(),
+        Date: new Date(payment.createdAt).toLocaleString(),
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Payments');
+      XLSX.writeFile(workbook, `payments-page-${pagination.page}.xlsx`, {
+        compression: true,
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeletePayment = async () => {
+    if (!deleteTarget) return;
+
+    try {
+      setDeleteError('');
+      setDeletingId(deleteTarget._id);
+      await apiClient.delete(`/admin/api/payments/${deleteTarget._id}`);
+      setDeleteTarget(null);
+
+      if (payments.length === 1 && pagination.page > 1) {
+        setPagination((prev) => ({ ...prev, page: prev.page - 1 }));
+      } else {
+        await fetchPayments(pagination.page);
+      }
+    } catch (error) {
+      console.error('Failed to delete payment:', error);
+      setDeleteError('Failed to delete payment. Please try again.');
+    } finally {
+      setDeletingId('');
+    }
+  };
+
   const inputClass =
-    'w-full px-4 py-2.5 rounded-lg border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500 transition-colors';
+    'w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-500 transition-colors';
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Payments</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Search, filter, and export payment records
-          </p>
+          <p className="mt-1 text-sm text-slate-500">Search and filter payment records</p>
         </div>
         <button
-          onClick={handleExportPDF}
-          className="px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-cyan-600 text-white rounded-lg font-medium hover:from-cyan-600 hover:to-cyan-700 shadow-lg shadow-cyan-500/25 transition-all"
+          onClick={handleExport}
+          disabled={loading || exporting || payments.length === 0}
+          className="h-10 px-4 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          Export PDF
+          {exporting ? 'Exporting...' : 'Export to Excel'}
         </button>
       </div>
 
       {/* Filters */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-        <h2 className="text-lg font-semibold text-slate-800 mb-4">Filters</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Search
-            </label>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-full md:w-64">
+            <label className="sr-only">Search</label>
             <input
               type="text"
               value={search}
@@ -159,10 +210,8 @@ const Payments = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              From Date
-            </label>
+          <div className="w-full sm:w-44">
+            <label className="sr-only">From Date</label>
             <input
               type="date"
               value={fromDate}
@@ -171,10 +220,8 @@ const Payments = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              To Date
-            </label>
+          <div className="w-full sm:w-44">
+            <label className="sr-only">To Date</label>
             <input
               type="date"
               value={toDate}
@@ -183,10 +230,8 @@ const Payments = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Min Amount
-            </label>
+          <div className="w-full sm:w-36">
+            <label className="sr-only">Min Amount</label>
             <input
               type="number"
               value={minAmount}
@@ -196,10 +241,8 @@ const Payments = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Max Amount
-            </label>
+          <div className="w-full sm:w-36">
+            <label className="sr-only">Max Amount</label>
             <input
               type="number"
               value={maxAmount}
@@ -209,10 +252,8 @@ const Payments = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Status
-            </label>
+          <div className="w-full sm:w-36">
+            <label className="sr-only">Status</label>
             <select
               value={status}
               onChange={(e) => setStatus(e.target.value)}
@@ -225,18 +266,10 @@ const Payments = () => {
               <option value="refunded">Refunded</option>
             </select>
           </div>
-        </div>
 
-        <div className="mt-4 flex space-x-3">
-          <button
-            onClick={handleSearch}
-            className="px-4 py-2.5 bg-cyan-500 text-white rounded-lg font-medium hover:bg-cyan-600 transition-colors"
-          >
-            Apply Filters
-          </button>
           <button
             onClick={handleClearFilters}
-            className="px-4 py-2.5 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition-colors"
+            className="h-10 px-4 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors"
           >
             Clear Filters
           </button>
@@ -245,6 +278,11 @@ const Payments = () => {
 
       {/* Payments Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        {deleteError ? (
+          <div className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {deleteError}
+          </div>
+        ) : null}
         {loading ? (
           <div className="p-12 text-center">
             <div className="flex items-center justify-center gap-3 text-slate-500">
@@ -299,15 +337,16 @@ const Payments = () => {
                     <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
                       Date
                     </th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-slate-500 uppercase tracking-wider">
+                      Action
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-slate-200">
                   {payments.map((payment) => (
                     <tr key={payment._id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-800">
-                        {payment.razorpayPaymentId?.substring(0, 20) ||
-                          payment.razorpayOrderId?.substring(0, 20) ||
-                          '-'}
+                        {formatPaymentId(payment)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-800 font-medium">
                         {payment.name || '-'}
@@ -322,24 +361,22 @@ const Payments = () => {
                         {formatCurrency(payment.amount)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span
-                          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            payment.status === 'success'
-                              ? 'bg-green-100 text-green-800'
-                              : payment.status === 'failed'
-                              ? 'bg-red-100 text-red-800'
-                              : payment.status === 'pending'
-                              ? 'bg-yellow-100 text-yellow-800'
-                              : payment.status === 'refunded'
-                              ? 'bg-purple-100 text-purple-800'
-                              : 'bg-gray-100 text-gray-800'
-                          }`}
-                        >
+                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusClass(payment.status)}`}>
                           {(payment.status || '').toUpperCase()}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
                         {new Date(payment.createdAt).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(payment)}
+                          disabled={deletingId === payment._id}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {deletingId === payment._id ? 'Deleting...' : 'Delete'}
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -380,6 +417,21 @@ const Payments = () => {
           </>
         )}
       </div>
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Delete payment"
+        description={`Delete payment ${
+          deleteTarget?.razorpayPaymentId || deleteTarget?.razorpayOrderId || ''
+        }? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        loading={Boolean(deletingId)}
+        onConfirm={handleDeletePayment}
+        onCancel={() => {
+          if (!deletingId) setDeleteTarget(null);
+        }}
+        danger
+      />
     </div>
   );
 };

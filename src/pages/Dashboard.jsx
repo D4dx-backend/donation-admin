@@ -207,7 +207,7 @@ const Dashboard = () => {
           <LineChart data={graphData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis dataKey="date" stroke="#64748b" fontSize={12} />
-            <YAxis stroke="#64748b" fontSize={12} />
+            <YAxis stroke="#64748b" fontSize={12} tickFormatter={(value) => `₹${(value / 100).toLocaleString('en-IN')}`} />
             <Tooltip
               formatter={(value) => formatCurrency(value)}
               labelFormatter={(label) => `Date: ${label}`}

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import apiClient from '../config/api';
+import ConfirmModal from '../components/ConfirmModal';
 import {
   LineChart,
   Line,
@@ -16,6 +18,8 @@ const Dashboard = () => {
   const [graphData, setGraphData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     fetchDashboardData();
@@ -37,19 +41,17 @@ const Dashboard = () => {
     }
   };
 
-  const handleDeletePayment = async (paymentId) => {
-    const shouldDelete = window.confirm(
-      'Delete this payment from recent payments? This action cannot be undone.'
-    );
-    if (!shouldDelete) return;
-
+  const handleDeletePayment = async () => {
+    if (!deleteTarget) return;
     try {
-      setDeletingId(paymentId);
-      await apiClient.delete(`/admin/api/payments/${paymentId}`);
+      setDeleteError('');
+      setDeletingId(deleteTarget._id);
+      await apiClient.delete(`/admin/api/payments/${deleteTarget._id}`);
       await fetchDashboardData();
+      setDeleteTarget(null);
     } catch (error) {
       console.error('Failed to delete payment:', error);
-      alert('Failed to delete payment');
+      setDeleteError('Failed to delete payment. Please try again.');
     } finally {
       setDeletingId('');
     }
@@ -104,11 +106,19 @@ const Dashboard = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Overview of payment statistics and trends
-        </p>
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Overview of payment statistics and trends
+          </p>
+        </div>
+        <Link
+          to="/payments"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-600 transition-colors shadow-sm"
+        >
+          View Payments
+        </Link>
       </div>
 
       {/* Stats Cards */}
@@ -232,11 +242,22 @@ const Dashboard = () => {
 
       {/* Recent Payments */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50">
+        <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between gap-4">
           <h2 className="text-lg font-semibold text-slate-800">
             Recent Payments
           </h2>
+          <Link
+            to="/payments"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+          >
+            Open Full Payments Page
+          </Link>
         </div>
+        {deleteError ? (
+          <div className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {deleteError}
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200">
             <thead className="bg-slate-50">
@@ -307,7 +328,7 @@ const Dashboard = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-right">
                       <button
                         type="button"
-                        onClick={() => handleDeletePayment(payment._id)}
+                        onClick={() => setDeleteTarget(payment)}
                         disabled={deletingId === payment._id}
                         className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                       >
@@ -321,6 +342,21 @@ const Dashboard = () => {
           </table>
         </div>
       </div>
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Delete payment"
+        description={`Delete payment ${
+          deleteTarget?.razorpayPaymentId || deleteTarget?.razorpayOrderId || ''
+        }? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        loading={Boolean(deletingId)}
+        onConfirm={handleDeletePayment}
+        onCancel={() => {
+          if (!deletingId) setDeleteTarget(null);
+        }}
+        danger
+      />
     </div>
   );
 };
